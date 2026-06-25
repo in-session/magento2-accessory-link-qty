@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace InSession\AccessoryLinkQty\Block\Product\View;
@@ -16,6 +17,8 @@ use Magento\Framework\Url\Helper\Data as UrlHelper;
  */
 class Partlists extends AbstractLinkProducts
 {
+    private const PARTLIST_CACHE_TAG_PREFIX = 'insession_alq_partlists';
+
     /**
      * @param Context $context
      * @param ProductVisibility $catalogProductVisibility
@@ -56,6 +59,44 @@ class Partlists extends AbstractLinkProducts
     }
 
     /**
+     * Return identities for the current PDP and actually resolved partlist products only.
+     *
+     * Important:
+     * The parent implementation uses getItems(), which can resolve a broader linked-product
+     * collection than the partlist output actually uses. On products without visible partlists,
+     * this can add hundreds of unrelated cat_p_* tags to the PDP.
+     *
+     * This override uses getItemsWithQty(), the same data path used by the template output.
+     *
+     * @return string[]
+     */
+    public function getIdentities(): array
+    {
+        $current = $this->getProduct();
+
+        if (!$current || !$current->getId()) {
+            return [];
+        }
+
+        $currentProductId = (int) $current->getId();
+
+        $identities = array_merge(
+            $current->getIdentities(),
+            [self::PARTLIST_CACHE_TAG_PREFIX . '_' . $currentProductId]
+        );
+
+        foreach ($this->getItemsWithQty() as $item) {
+            $product = $item['product'] ?? null;
+
+            if ($product instanceof ProductInterface) {
+                $identities = array_merge($identities, $product->getIdentities());
+            }
+        }
+
+        return array_values(array_unique($identities));
+    }
+
+    /**
      * Get the title for the block.
      * The title can be set via layout XML argument 'title'.
      *
@@ -63,7 +104,7 @@ class Partlists extends AbstractLinkProducts
      */
     public function getTitle(): string
     {
-        return $this->getData('title') ?: (string)__('Partlist');
+        return $this->getData('title') ?: (string) __('Partlist');
     }
 
     /**
@@ -73,29 +114,32 @@ class Partlists extends AbstractLinkProducts
      */
     public function getItemsWithQty(): array
     {
-        // ... (Der Rest deiner Methode bleibt unverändert, er ist bereits perfekt)
         $current = $this->getProduct();
+
         if (!$current || !$current->getId()) {
             return [];
         }
 
         $linkCollection = $this->partlistsModel->getPartlistsLinkCollection($current);
+
         if (!$linkCollection->getSize()) {
             return [];
         }
 
         $qtyById = [];
         $posById = [];
-        $ids     = [];
+        $ids = [];
 
         foreach ($linkCollection as $row) {
-            $lid = (int)$row->getLinkedProductId();
-            if ($lid <= 0) {
+            $linkedProductId = (int) $row->getLinkedProductId();
+
+            if ($linkedProductId <= 0) {
                 continue;
             }
-            $ids[]         = $lid;
-            $qtyById[$lid] = max(0.0, (float)$row->getQty());
-            $posById[$lid] = (int)$row->getPosition();
+
+            $ids[] = $linkedProductId;
+            $qtyById[$linkedProductId] = max(0.0, (float) $row->getQty());
+            $posById[$linkedProductId] = (int) $row->getPosition();
         }
 
         if (!$ids) {
@@ -103,25 +147,32 @@ class Partlists extends AbstractLinkProducts
         }
 
         $items = [];
-        foreach ($this->getItems() as $p) {
-            /** @var ProductInterface $p */
-            $id = (int)$p->getId();
-            if (!in_array($id, $ids, true)) {
+
+        foreach ($this->getItems() as $product) {
+            /** @var ProductInterface $product */
+            $productId = (int) $product->getId();
+
+            if (!in_array($productId, $ids, true)) {
                 continue;
             }
-            $qty = $qtyById[$id] ?? 1.0;
+
+            $qty = $qtyById[$productId] ?? 1.0;
+
             if ($qty <= 0) {
                 $qty = 1.0;
             }
 
             $items[] = [
-                'product'  => $p,
-                'qty'      => $qty,
-                'position' => $posById[$id] ?? 0,
+                'product' => $product,
+                'qty' => $qty,
+                'position' => $posById[$productId] ?? 0,
             ];
         }
 
-        usort($items, static fn($a, $b) => ($a['position'] <=> $b['position']));
+        usort(
+            $items,
+            static fn (array $a, array $b): int => ($a['position'] <=> $b['position'])
+        );
 
         return $items;
     }
